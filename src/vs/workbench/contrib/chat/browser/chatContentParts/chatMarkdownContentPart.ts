@@ -5,10 +5,11 @@
 
 import * as dom from '../../../../../base/browser/dom.js';
 import { StandardMouseEvent } from '../../../../../base/browser/mouseEvent.js';
+import { HoverPosition } from '../../../../../base/browser/ui/hover/hoverWidget.js';
 import { findLast } from '../../../../../base/common/arraysFind.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { Emitter } from '../../../../../base/common/event.js';
-import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
 import { equalsIgnoreCase } from '../../../../../base/common/strings.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
@@ -26,6 +27,7 @@ import { IMenuService, MenuId } from '../../../../../platform/actions/common/act
 import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { FileKind } from '../../../../../platform/files/common/files.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILabelService } from '../../../../../platform/label/common/label.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
@@ -43,25 +45,19 @@ import { CodeBlockPart, ICodeBlockData, ICodeBlockRenderOptions, localFileLangua
 import '../media/chatCodeBlockPill.css';
 import { IDisposableReference, ResourcePool } from './chatCollections.js';
 import { IChatContentPart, IChatContentPartRenderContext } from './chatContentParts.js';
-
 const $ = dom.$;
-
 export interface IChatMarkdownContentPartOptions {
 	readonly codeBlockRenderOptions?: ICodeBlockRenderOptions;
 	readonly renderCodeBlockPills?: boolean;
 }
-
 export class ChatMarkdownContentPart extends Disposable implements IChatContentPart {
 	private static idPool = 0;
 	public readonly codeblocksPartId = String(++ChatMarkdownContentPart.idPool);
 	public readonly domNode: HTMLElement;
 	private readonly allRefs: IDisposableReference<CodeBlockPart | CollapsedCodeBlock>[] = [];
-
 	private readonly _onDidChangeHeight = this._register(new Emitter<void>());
 	public readonly onDidChangeHeight = this._onDidChangeHeight.event;
-
 	public readonly codeblocks: IChatCodeBlockInfo[] = [];
-
 	constructor(
 		private readonly markdown: IChatMarkdownContent,
 		context: IChatContentPartRenderContext,
@@ -77,13 +73,10 @@ export class ChatMarkdownContentPart extends Disposable implements IChatContentP
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 	) {
 		super();
-
 		const element = context.element;
 		const inUndoStop = (findLast(context.content, e => e.kind === 'undoStop', context.contentIndex) as IChatUndoStop | undefined)?.id;
-
 		// We release editors in order so that it's more likely that the same editor will be assigned if this element is re-rendered right away, like it often is during progressive rendering
 		const orderedDisposablesList: IDisposable[] = [];
-
 		// Need to track the index of the codeblock within the response so it can have a unique ID,
 		// and within this part to find it within the codeblocks array
 		let globalCodeBlockIndexStart = codeBlockStartIndex;
@@ -119,7 +112,6 @@ export class ChatMarkdownContentPart extends Disposable implements IChatContentP
 					codemapperUri = fastUpdateModelEntry.codemapperUri;
 					textModel = modelEntry.model;
 				}
-
 				const hideToolbar = isResponseVM(element) && element.errorDetails?.responseIsFiltered;
 				const renderOptions = {
 					...this.rendererOptions.codeBlockRenderOptions,
@@ -128,15 +120,12 @@ export class ChatMarkdownContentPart extends Disposable implements IChatContentP
 					renderOptions.hideToolbar = hideToolbar;
 				}
 				const codeBlockInfo: ICodeBlockData = { languageId, textModel, codeBlockIndex: globalIndex, codeBlockPartIndex: thisPartIndex, element, range, parentContextKeyService: contextKeyService, vulns, codemapperUri, renderOptions };
-
 				if (!rendererOptions.renderCodeBlockPills || element.isCompleteAddedRequest || !codemapperUri) {
 					const ref = this.renderCodeBlock(codeBlockInfo, text, isCodeBlockComplete, currentWidth);
 					this.allRefs.push(ref);
-
 					// Attach this after updating text/layout of the editor, so it should only be fired when the size updates later (horizontal scrollbar, wrapping)
 					// not during a renderElement OR a progressive render (when we will be firing this event anyway at the end of the render)
 					this._register(ref.object.onDidChangeContentHeight(() => this._onDidChangeHeight.fire()));
-
 					const ownerMarkdownPartId = this.codeblocksPartId;
 					const info: IChatCodeBlockInfo = new class implements IChatCodeBlockInfo {
 						readonly ownerMarkdownPartId = ownerMarkdownPartId;
@@ -191,14 +180,11 @@ export class ChatMarkdownContentPart extends Disposable implements IChatContentP
 			},
 			asyncRenderCallback: () => this._onDidChangeHeight.fire(),
 		}));
-
 		const markdownDecorationsRenderer = instantiationService.createInstance(ChatMarkdownDecorationsRenderer);
 		this._register(markdownDecorationsRenderer.walkTreeAndAnnotateReferenceLinks(markdown, result.element));
-
 		orderedDisposablesList.reverse().forEach(d => this._register(d));
 		this.domNode = result.element;
 	}
-
 	private renderCodeBlockPill(sessionId: string, requestId: string, inUndoStop: string | undefined, codemapperUri: URI | undefined, isStreaming: boolean): IDisposableReference<CollapsedCodeBlock> {
 		const codeBlock = this.instantiationService.createInstance(CollapsedCodeBlock, sessionId, requestId, inUndoStop);
 		if (codemapperUri) {
@@ -210,7 +196,6 @@ export class ChatMarkdownContentPart extends Disposable implements IChatContentP
 			dispose: () => codeBlock.dispose()
 		};
 	}
-
 	private renderCodeBlock(data: ICodeBlockData, text: string, isComplete: boolean, currentWidth: number): IDisposableReference<CodeBlockPart> {
 		const ref = this.editorPool.get();
 		const editorInfo = ref.object;
@@ -221,17 +206,13 @@ export class ChatMarkdownContentPart extends Disposable implements IChatContentP
 				this._onDidChangeHeight.fire();
 			});
 		}
-
 		editorInfo.render(data, currentWidth);
-
 		return ref;
 	}
-
 	hasSameContent(other: IChatProgressRenderableResponseContent): boolean {
 		return other.kind === 'markdownContent' && !!(other.content.value === this.markdown.content.value
 			|| this.rendererOptions.renderCodeBlockPills && this.codeblocks.at(-1)?.isStreaming && this.codeblocks.at(-1)?.codemapperUri !== undefined && other.content.value.lastIndexOf('```') === this.markdown.content.value.lastIndexOf('```'));
 	}
-
 	layout(width: number): void {
 		this.allRefs.forEach((ref, index) => {
 			if (ref.object instanceof CodeBlockPart) {
@@ -244,20 +225,15 @@ export class ChatMarkdownContentPart extends Disposable implements IChatContentP
 			}
 		});
 	}
-
 	addDisposable(disposable: IDisposable): void {
 		this._register(disposable);
 	}
 }
-
 export class EditorPool extends Disposable {
-
 	private readonly _pool: ResourcePool<CodeBlockPart>;
-
 	public inUse(): Iterable<CodeBlockPart> {
 		return this._pool.inUse;
 	}
-
 	constructor(
 		options: ChatEditorOptions,
 		delegate: IChatRendererDelegate,
@@ -269,7 +245,6 @@ export class EditorPool extends Disposable {
 			return instantiationService.createInstance(CodeBlockPart, options, MenuId.ChatCodeBlock, delegate, overflowWidgetsDomNode);
 		}));
 	}
-
 	get(): IDisposableReference<CodeBlockPart> {
 		const codeBlock = this._pool.get();
 		let stale = false;
@@ -284,25 +259,23 @@ export class EditorPool extends Disposable {
 		};
 	}
 }
-
 function codeblockHasClosingBackticks(str: string): boolean {
 	str = str.trim();
 	return !!str.match(/\n```+$/);
 }
-
 class CollapsedCodeBlock extends Disposable {
 
 	public readonly element: HTMLElement;
+
+	private readonly hover = this._register(new MutableDisposable());
+	private tooltip: string | undefined;
 
 	private _uri: URI | undefined;
 	public get uri(): URI | undefined {
 		return this._uri;
 	}
-
 	private _currentDiff: IEditSessionEntryDiff | undefined;
-
 	private readonly _progressStore = this._store.add(new DisposableStore());
-
 	constructor(
 		private readonly sessionId: string,
 		private readonly requestId: string,
@@ -315,6 +288,7 @@ class CollapsedCodeBlock extends Disposable {
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IMenuService private readonly menuService: IMenuService,
 		@IChatEditingService private readonly chatEditingService: IChatEditingService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this.element = $('.chat-codeblock-pill-widget');
@@ -333,7 +307,6 @@ class CollapsedCodeBlock extends Disposable {
 		this._register(dom.addDisposableListener(this.element, dom.EventType.CONTEXT_MENU, domEvent => {
 			const event = new StandardMouseEvent(dom.getWindow(domEvent), domEvent);
 			dom.EventHelper.stop(domEvent, true);
-
 			this.contextMenuService.showContextMenu({
 				contextKeyService: this.contextKeyService,
 				getAnchor: () => event,
@@ -344,17 +317,13 @@ class CollapsedCodeBlock extends Disposable {
 			});
 		}));
 	}
-
 	render(uri: URI, isStreaming?: boolean): void {
 		this._progressStore.clear();
-
 		this._uri = uri;
-
 		const iconText = this.labelService.getUriBasenameLabel(uri);
 		const editSession = this.chatEditingService.getEditingSession(this.sessionId);
 		const modifiedEntry = editSession?.getEntry(uri);
 		const isComplete = !modifiedEntry?.isCurrentlyBeingModifiedBy.get();
-
 		let iconClasses: string[] = [];
 		if (isStreaming || !isComplete) {
 			const codicon = ThemeIcon.modify(Codicon.loading, 'spin');
@@ -363,10 +332,8 @@ class CollapsedCodeBlock extends Disposable {
 			const fileKind = uri.path.endsWith('/') ? FileKind.FOLDER : FileKind.FILE;
 			iconClasses = getIconClasses(this.modelService, this.languageService, uri, fileKind);
 		}
-
 		const iconEl = dom.$('span.icon');
 		iconEl.classList.add(...iconClasses);
-
 		const children = [dom.$('span.icon-label', {}, iconText)];
 		const labelDetail = dom.$('span.label-detail', {}, '');
 		children.push(labelDetail);
@@ -375,8 +342,7 @@ class CollapsedCodeBlock extends Disposable {
 		}
 
 		this.element.replaceChildren(iconEl, ...children);
-		this.element.title = this.labelService.getUriLabel(uri, { relative: false });
-
+		this.updateTooltip(this.labelService.getUriLabel(uri, { relative: false }));
 
 		const renderDiff = (changes: IEditSessionEntryDiff | undefined) => {
 			const labelAdded = this.element.querySelector('.label-added') ?? this.element.appendChild(dom.$('span.label-added'));
@@ -387,19 +353,18 @@ class CollapsedCodeBlock extends Disposable {
 				labelRemoved.textContent = `-${changes.removed}`;
 				const insertionsFragment = changes.added === 1 ? localize('chat.codeblock.insertions.one', "1 insertion") : localize('chat.codeblock.insertions', "{0} insertions", changes.added);
 				const deletionsFragment = changes.removed === 1 ? localize('chat.codeblock.deletions.one', "1 deletion") : localize('chat.codeblock.deletions', "{0} deletions", changes.removed);
-				this.element.ariaLabel = this.element.title = localize('summary', 'Edited {0}, {1}, {2}', iconText, insertionsFragment, deletionsFragment);
+				const summary = localize('summary', 'Edited {0}, {1}, {2}', iconText, insertionsFragment, deletionsFragment);
+				this.element.ariaLabel = summary;
+				this.updateTooltip(summary);
 			}
 		};
 
 		const diffBetweenStops = modifiedEntry && editSession
 			? editSession.getEntryDiffBetweenStops(modifiedEntry.modifiedURI, this.requestId, this.inUndoStop)
 			: undefined;
-
 		// Show a percentage progress that is driven by the rewrite
-
 		this._progressStore.add(autorun(r => {
 			const rewriteRatio = modifiedEntry?.rewriteRatio.read(r);
-
 			const isComplete = !modifiedEntry?.isCurrentlyBeingModifiedBy.read(r);
 			if (!isStreaming && !isComplete) {
 				const value = rewriteRatio;
@@ -410,10 +375,23 @@ class CollapsedCodeBlock extends Disposable {
 				iconEl.classList.add(...getIconClasses(this.modelService, this.languageService, uri, fileKind));
 				labelDetail.textContent = '';
 			}
-
 			if (!isStreaming && isComplete && diffBetweenStops) {
 				renderDiff(diffBetweenStops.read(r));
 			}
 		}));
+	}
+
+	private updateTooltip(tooltip: string): void {
+		this.tooltip = tooltip;
+		if (!this.hover.value) {
+			this.hover.value = this.hoverService.setupDelayedHover(this.element, () => (
+				{
+					content: this.tooltip!,
+					appearance: { compact: true, showPointer: true },
+					position: { hoverPosition: HoverPosition.BELOW },
+					persistence: { hideOnKeyDown: true },
+				}
+			));
+		}
 	}
 }
